@@ -7,6 +7,8 @@ import pygmsh
 import dolfinx
 from mpi4py import MPI
 import ufl
+from petsc4py.PETSc import ScalarType
+import pyvista
 
 def in2m(x):
     x_np = np.asarray(x)
@@ -23,7 +25,8 @@ flexure = { # all units in m
 material = {
     # Aluminum H32-5052
     "E": 70.3E9, # Young's Modulus, in Pa
-    "v": 0.33, # Poisson's Ratio
+    "nu": 0.33, # Poisson's Ratio
+    "G": 70.3E9 / (2 * (1 + 0.33)), # Shear Modulus
     "Yield": 193E6 #Yield Strength, in Pa
 }
 
@@ -105,8 +108,6 @@ def generate_flexure_mesh(pts, mesh_density=0.01):
     bottom_edge = np.transpose([x1, y1])
     top_edge = np.transpose([x3, y3])[::-1]
     contour = np.concatenate((bottom_edge, top_edge))
-    
-    print(contour)
 
     with pygmsh.geo.Geometry() as geom:
         geom.add_polygon(
@@ -142,9 +143,103 @@ def display_mesh(mesh):
     plt.gca().set_aspect("equal")
     plt.show()
 
+def run_fea(mesh, order=2):
 
-pts = in2m([0.1, -0.2, 0.3, -0.4, 0.5])
+    # Create the vector-valued function space
+    element = ufl.VectorElement('Lagrange',mesh.ufl_cell(),degree=1,dim=2)
+    V = dolfinx.fem.FunctionSpace(mesh, element)
+
+    # Define the test and trial functions on the function space
+    du, dv = ufl.TestFunctions(V)
+    u, v = ufl.TrialFunctions(V)
+    x = ufl.SpatialCoordinate(mesh)
+
+    # Identify points to be fixed (Dirichlet Boundary Condition)
+    def fixed_end(x):
+        return x[0] < flexure['foot_length']
+    
+    left_facets = dolfinx.mesh.locate_entities(mesh, mesh.topology.dim - 1, fixed_end)
+    dofs = dolfinx.fem.locate_dofs_topological(V, mesh.topology.dim - 1, left_facets)
+
+    # bc = dolfinx.fem.dirichletbc(value=ScalarType([0,0]), dofs=dofs, V=V)
+
+    u_bc = dolfinx.fem.Function(V)
+    with u_bc.vector.localForm() as loc:
+        loc.set(0.0)
+
+    bcs = [dolfinx.fem.dirichletbc(u_bc, dofs)]
+        
+    dx = ufl.Measure("dx",domain=mesh)
+    right_facets = dolfinx.mesh.locate_entities_boundary(mesh, 1, lambda x : np.isclose(x[0], flexure['total_length']))
+    mt = dolfinx.mesh.meshtags(mesh, 1, right_facets, 1)
+    ds = ufl.Measure("ds", subdomain_data=mt)
+
+    # Define variational problem
+    u = ufl.TrialFunction(V)
+    v = ufl.TestFunction(V)
+
+    E = material["E"] 
+    nu = material["nu"]
+    mu = E / (2.0 * (1.0 + nu))
+    lmbda = E * nu / ((1.0 + nu) * (1.0 - 2.0 * nu))
+    # this is for plane-stress
+    lmbda = 2*mu*lmbda/(lmbda+2*mu)
+
+    def eps(u):
+        # Strain
+        return ufl.sym(ufl.grad(u))
+
+    def sigma(eps):
+        # Stress
+        return 2.0 * mu * eps + lmbda * ufl.tr(eps) * ufl.Identity(2)
+
+    def a(u,v):
+        # The bilinear form of the weak formulation
+        return ufl.inner(sigma(eps(u)), eps(v)) * dx 
+
+    def L(v): 
+        # The linear form of the weak formulation
+        # Volume force
+        b = dolfinx.fem.Constant(mesh, ScalarType([0.0, 0.0]))
+
+        # Surface force on the top
+        f = dolfinx.fem.Constant(mesh,ScalarType([0.0, 0.0]))
+        return ufl.dot(b, v) * dx + ufl.dot(f, v) * ds(1)
+    
+    problem = dolfinx.fem.petsc.LinearProblem(a(u,v), L(v), bcs=bcs, 
+                                    petsc_options={"ksp_type": "preonly", "pc_type": "lu"})
+    uh = problem.solve()
+    uh.name = "displacement"
+
+    # Write result to png/XDMF file 
+    pyvista.start_xvfb()
+    from dolfinx.plot import create_vtk_mesh
+
+    # Create plotter and pyvista grid
+    p = pyvista.Plotter(off_screen=True)
+    topology, cell_types, x = create_vtk_mesh(V)
+    grid = pyvista.UnstructuredGrid(topology, cell_types, x)
+
+    # Attach vector values to grid and warp grid by vector
+
+    vals = np.zeros((x.shape[0], 3))
+    vals[:,:len(uh)] = uh.x.array.reshape((x.shape[0], len(uh)))
+    grid["u"] = vals
+    actor_0 = p.add_mesh(grid, style="wireframe", color="k")
+    warped = grid.warp_by_vector("u", factor=1.5)
+    actor_1 = p.add_mesh(warped,opacity=0.8)
+    p.view_xy()
+    fig_array = p.screenshot(f"meshes/component.png")
+
+    '''from pathlib import Path
+
+    Path("output").mkdir(parents=True, exist_ok=True)    
+    with dolfinx.io.XDMFFile(MPI.COMM_WORLD, "meshes/result.xdmf", "w") as file:
+            file.write_mesh(uh.function_space.mesh)
+            file.write_function(uh)'''
+
+pts = in2m([0.1, -0.2, 0.1])
 mesh, pymesh = generate_flexure_mesh(pts, mesh_density=in2m(0.01))
-
-
+# display_mesh(pymesh)
+run_fea(mesh, order=2)
 

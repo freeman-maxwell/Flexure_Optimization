@@ -182,9 +182,13 @@ def run_fea(mesh, force, i, ani):
     def top_load(x):
         # This function is broken, or perhaps its implementation
         delta = in2m(0.5)
-        middle = np.abs(x[0] - flexure['total_length']) < delta
-        top = np.isclose(middle_flexure_value, x[1])
-        return np.logical_and(middle, top)
+        pt = np.array([flexure['total_length'], middle_flexure_value])
+        output = np.isclose(pt, x)
+        if True in output:
+            print('success')
+        else:
+            print('fail')
+        return output
     
     fixed_facets = dolfinx.mesh.locate_entities(mesh, mesh.topology.dim - 1, fixed_ends)
     dofs = dolfinx.fem.locate_dofs_topological(V, mesh.topology.dim - 1, fixed_facets)
@@ -226,7 +230,7 @@ def run_fea(mesh, force, i, ani):
     def L(v): 
         # The linear form of the weak formulation
         # Volume force -- gravity
-        b = dolfinx.fem.Constant(mesh, ScalarType([0.0, -1 * force]))
+        b = dolfinx.fem.Constant(mesh, ScalarType([0.0, 0.0]))
 
         # Surface force on the top
         f = dolfinx.fem.Constant(mesh, ScalarType([0, 0.0]))
@@ -269,6 +273,7 @@ def run_fea(mesh, force, i, ani):
                 file.write_mesh(uh.function_space.mesh)
                 file.write_function(uh)
         '''
+    print('done')
     return max_disp
 
 def animate_frames(png_directory, output_path, fps=10):
@@ -333,5 +338,6 @@ def get_force_disp_curve(pts, max_force, N, ani=True):
     return np.array(disp), forces[0:len(disp)]
 
 
-
-
+pts = [0.0, 0.0, 0.5, 1.0]
+mesh, pymesh = generate_flexure_mesh(pts, mesh_density=in2m(0.01))
+run_fea(mesh, 0.1, 0, False)

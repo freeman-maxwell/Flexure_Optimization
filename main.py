@@ -26,7 +26,7 @@ def opt():
     bounds = ((-0.5, 0.5), (-0.5, 0.5), (-0.5, 0.5))
 
     # Perform the optimization
-    result = minimize(optimize_this, initial_guess, method='L-BFGS-B', bounds=bounds, callback=callback)  # You can try different methods
+    result = minimize(optimize_this, initial_guess, method='L-BFGS-B', bounds=bound)  # You can try different methods
 
     # Extract the minimum value and the corresponding input
     minimum_value = result.fun
